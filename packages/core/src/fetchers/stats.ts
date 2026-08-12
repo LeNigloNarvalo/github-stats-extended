@@ -71,6 +71,9 @@ const GRAPHQL_STATS_QUERY = `
       repositoryDiscussionComments(onlyAnswers: true) @include(if: $includeDiscussionsAnswers) {
         totalCount
       }
+      contributionsCollection {
+        contributionYears
+      }
       ${GRAPHQL_REPOS_FIELD}
     }
   }
@@ -91,6 +94,7 @@ interface StatsUser {
   followers: { totalCount: number };
   repositoryDiscussions?: { totalCount: number };
   repositoryDiscussionComments?: { totalCount: number };
+  contributionsCollection: { contributionYears: Array<number> };
   repositories: {
     totalCount: number;
     nodes: Array<{ name: string; stargazerCount: number }>;
@@ -355,6 +359,64 @@ const fetchRepoUserStats = async (
 };
 
 /**
+ * Fetch all-time contributions by building a single GraphQL query
+ * for all the given years.
+ */
+const fetchTotalContributions = async (
+  username: string,
+  years: Array<number>,
+  pat: string | null = null,
+): Promise<number> => {
+  if (years.length === 0) {
+    return 0;
+  }
+
+  const yearFields = years
+    .map(
+      (year) =>
+        `year_${year}: contributionsCollection(from: "${year}-01-01T00:00:00Z", to: "${year}-12-31T23:59:59Z") { contributionCalendar { totalContributions } }`,
+    )
+    .join("\n");
+
+  const contributionsQuery = `
+    query userContributions($login: String!) {
+      user(login: $login) {
+        ${yearFields}
+      }
+    }
+  `;
+
+  const contributionsFetcher = (
+    variables: Record<string, unknown>,
+    token: string,
+  ): Promise<AxiosResponse> => {
+    return request(
+      { query: contributionsQuery, variables },
+      { Authorization: `bearer ${token}` },
+    );
+  };
+
+  const contribRes = await retryer(
+    contributionsFetcher,
+    { login: username },
+    pat,
+  );
+  const user = contribRes.data.data?.user;
+  if (!user) {
+    return 0;
+  }
+
+  let total = 0;
+  for (const year of years) {
+    const yearBlock = user[`year_${year}`];
+    if (yearBlock?.contributionCalendar?.totalContributions) {
+      total += yearBlock.contributionCalendar.totalContributions;
+    }
+  }
+  return total;
+};
+
+/**
  * Fetch stats for a given username.
  *
  * @param username GitHub username.
@@ -372,6 +434,7 @@ const fetchRepoUserStats = async (
  * @param include_issues_authored Include count of issues authored.
  * @param include_issues_commented Include count of issues commented.
  * @param ownerAffiliations Owner affiliations. Default: OWNER.
+ * @param include_contributions Include all-time contributions.
  * @param pat Optional PAT override.
  * @returns Stats data.
  */
@@ -391,6 +454,7 @@ const fetchStats = async (
   include_issues_authored = false,
   include_issues_commented = false,
   ownerAffiliations: Array<string> = [],
+  include_contributions = false,
   pat: string | null = null,
 ): Promise<StatsData> => {
   if (!username) {
@@ -414,6 +478,7 @@ const fetchStats = async (
     totalPRsReviewed: 0,
     totalIssuesAuthored: 0,
     totalIssuesCommented: 0,
+    totalContributions: 0,
     rank: { level: "C", percentile: 100 },
   };
   const affiliations = parseOwnerAffiliations(ownerAffiliations);
@@ -497,6 +562,14 @@ const fetchStats = async (
       user.repositoryDiscussionComments?.totalCount ?? 0;
   }
   stats.contributedTo = user.repositoriesContributedTo.totalCount;
+
+  if (include_contributions) {
+    stats.totalContributions = await fetchTotalContributions(
+      username,
+      user.contributionsCollection.contributionYears,
+      pat,
+    );
+  }
 
   // Retrieve stars while filtering out repositories to be hidden.
   const allExcludedRepos = [

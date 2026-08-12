@@ -247,6 +247,7 @@ const renderStatsCard = (
     totalPRsReviewed,
     totalIssuesAuthored,
     totalIssuesCommented,
+    totalContributions,
     rank,
   } = stats;
   const {
@@ -411,6 +412,15 @@ const renderStatsCard = (
       value: totalIssuesCommented,
       id: "issues_commented",
       link: `https://github.com/search?q=${repoFilter}commenter%3A${encodedUsername}+-author%3A${encodedUsername}&amp;type=issues`,
+    };
+  }
+
+  if (show.includes("contributions")) {
+    STATS["contributions"] = {
+      icon: icons.repo_push,
+      label: i18n.t("statcard.contributions"),
+      value: totalContributions,
+      id: "contributions",
     };
   }
 
