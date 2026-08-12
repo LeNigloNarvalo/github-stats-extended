@@ -1,11 +1,15 @@
-import type { AxiosResponse } from "axios";
-
 import { MissingParamError } from "../common/error.js";
-import { request } from "../common/http.js";
+import { httpGraphQLRequest } from "../common/http.js";
+import type { GraphQLResponse } from "../common/http.js";
 import { retryer } from "../common/retryer.js";
+import { GetRepoDocument } from "../graphql/generated/repo.js";
+import type {
+  GetRepoQuery,
+  GetRepoQueryVariables,
+} from "../graphql/generated/repo.js";
 
 import { fetchRepoUserStats } from "./stats.js";
-import type { RepoInfo, RepositoryData } from "./types.js";
+import type { RepositoryData } from "./types.js";
 
 /**
  * Repo data fetcher.
@@ -15,57 +19,15 @@ import type { RepoInfo, RepositoryData } from "./types.js";
  * @returns The response.
  */
 const fetcher = (
-  variables: Record<string, unknown>,
+  variables: GetRepoQueryVariables,
   token: string,
-): Promise<AxiosResponse> => {
-  return request(
-    {
-      query: `
-      fragment RepoInfo on Repository {
-        name
-        nameWithOwner
-        isPrivate
-        isArchived
-        isTemplate
-        stargazerCount
-        description
-        primaryLanguage {
-          color
-          id
-          name
-        }
-        forkCount
-      }
-      query getRepo($login: String!, $repo: String!) {
-        user(login: $login) {
-          repository(name: $repo) {
-            ...RepoInfo
-          }
-        }
-        organization(login: $login) {
-          repository(name: $repo) {
-            ...RepoInfo
-          }
-        }
-      }
-    `,
-      variables,
-    },
-    {
-      Authorization: `token ${token}`,
-    },
-  );
+): Promise<GraphQLResponse<GetRepoQuery>> => {
+  return httpGraphQLRequest(GetRepoDocument, variables, {
+    Authorization: `token ${token}`,
+  });
 };
 
 const urlExample = "/api/pin?username=USERNAME&repo=REPO_NAME";
-
-/** Shape of `response.data` returned by the repo query. */
-interface RepoQueryResponse {
-  data: {
-    user: { repository: RepoInfo | null } | null;
-    organization: { repository: RepoInfo | null } | null;
-  };
-}
 
 /**
  * Fetch repository data.
@@ -113,11 +75,7 @@ const fetchRepo = async (
     throw new MissingParamError(["repo"], urlExample);
   }
 
-  const res = await retryer<RepoQueryResponse>(
-    fetcher,
-    { login: owner, repo: reponame },
-    pat,
-  );
+  const res = await retryer(fetcher, { login: owner, repo: reponame }, pat);
 
   const data = res.data.data;
 
