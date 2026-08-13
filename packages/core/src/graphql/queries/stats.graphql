@@ -80,3 +80,9 @@ query userInfo(
     ...RepoStars
   }
 }
+
+fragment YearContributions on ContributionsCollection {
+  contributionCalendar {
+    totalContributions
+  }
+}

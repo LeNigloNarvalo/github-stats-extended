@@ -70,6 +70,10 @@ export type UserInfoQuery = {
   } | null;
 };
 
+export type YearContributionsFragment = {
+  contributionCalendar: { totalContributions: number };
+};
+
 export const UserReposDocument = graphqlDocument<
   UserReposQuery,
   UserReposQueryVariables

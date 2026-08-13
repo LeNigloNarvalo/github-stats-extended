@@ -18,6 +18,7 @@ import {
 import type {
   UserInfoQuery,
   UserInfoQueryVariables,
+  YearContributionsFragment,
 } from "../graphql/generated/stats.js";
 import type { GraphQLDocument } from "../graphql/graphqlDocument.js";
 
@@ -277,6 +278,10 @@ const fetchRepoUserStats = async (
   return stats;
 };
 
+interface ContributionsQuery {
+  user: Record<string, YearContributionsFragment> | null;
+}
+
 /**
  * Fetch all-time contributions by building a single GraphQL query
  * for all the given years.
@@ -297,7 +302,7 @@ const fetchTotalContributions = async (
     )
     .join("\n");
 
-  const contributionsQuery = `
+  const query = `
     query userContributions($login: String!) {
       user(login: $login) {
         ${yearFields}
@@ -308,11 +313,11 @@ const fetchTotalContributions = async (
   const contributionsFetcher = (
     variables: Record<string, unknown>,
     token: string,
-  ): Promise<AxiosResponse> => {
+  ): Promise<GraphQLResponse<ContributionsQuery>> => {
     return request(
-      { query: contributionsQuery, variables },
+      { query, variables },
       { Authorization: `bearer ${token}` },
-    );
+    ) as Promise<GraphQLResponse<ContributionsQuery>>;
   };
 
   const contribRes = await retryer(
@@ -320,7 +325,7 @@ const fetchTotalContributions = async (
     { login: username },
     pat,
   );
-  const user = contribRes.data.data?.user;
+  const user = contribRes.data.data.user;
   if (!user) {
     return 0;
   }
@@ -328,7 +333,7 @@ const fetchTotalContributions = async (
   let total = 0;
   for (const year of years) {
     const yearBlock = user[`year_${year}`];
-    if (yearBlock?.contributionCalendar?.totalContributions) {
+    if (yearBlock?.contributionCalendar.totalContributions) {
       total += yearBlock.contributionCalendar.totalContributions;
     }
   }
