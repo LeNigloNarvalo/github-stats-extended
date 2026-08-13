@@ -17,6 +17,9 @@ const data_stats = {
     user: {
       name: "Anurag Hazra",
       repositoriesContributedTo: { totalCount: 61 },
+      contributionsCollection: {
+        contributionYears: [2022, 2024],
+      },
       commits: {
         totalCommitContributions: 100,
       },
@@ -97,6 +100,15 @@ const data_repo_zero_stars = {
   },
 };
 
+const data_contributions = {
+  data: {
+    user: {
+      year_2022: { contributionCalendar: { totalContributions: 150 } },
+      year_2024: { contributionCalendar: { totalContributions: 200 } },
+    },
+  },
+};
+
 const error = {
   errors: [
     {
@@ -121,6 +133,9 @@ beforeEach(() => {
 
     if (req.variables?.startTime?.startsWith("2003")) {
       return [200, data_year2003];
+    }
+    if (req.query.includes("contributionCalendar")) {
+      return [200, data_contributions];
     }
     return [
       200,
@@ -164,6 +179,7 @@ describe("Test fetchStats", () => {
       totalPRsReviewed: 0,
       totalIssuesAuthored: 0,
       totalIssuesCommented: 0,
+      totalContributions: 0,
       rank,
     });
   });
@@ -205,6 +221,7 @@ describe("Test fetchStats", () => {
       totalPRsReviewed: 0,
       totalIssuesAuthored: 0,
       totalIssuesCommented: 0,
+      totalContributions: 0,
       rank,
     });
   });
@@ -254,6 +271,7 @@ describe("Test fetchStats", () => {
       totalPRsReviewed: 0,
       totalIssuesAuthored: 0,
       totalIssuesCommented: 0,
+      totalContributions: 0,
       rank,
     });
   });
@@ -312,6 +330,7 @@ describe("Test fetchStats", () => {
       totalPRsReviewed: 0,
       totalIssuesAuthored: 0,
       totalIssuesCommented: 0,
+      totalContributions: 0,
       rank,
     });
   });
@@ -349,6 +368,7 @@ describe("Test fetchStats", () => {
       totalPRsReviewed: 0,
       totalIssuesAuthored: 0,
       totalIssuesCommented: 0,
+      totalContributions: 0,
       rank,
     });
   });
@@ -386,6 +406,7 @@ describe("Test fetchStats", () => {
       totalPRsReviewed: 0,
       totalIssuesAuthored: 0,
       totalIssuesCommented: 0,
+      totalContributions: 0,
       rank,
     });
   });
@@ -423,6 +444,7 @@ describe("Test fetchStats", () => {
       totalPRsReviewed: 0,
       totalIssuesAuthored: 0,
       totalIssuesCommented: 0,
+      totalContributions: 0,
       rank,
     });
   });
@@ -457,6 +479,7 @@ describe("Test fetchStats", () => {
       totalPRsReviewed: 0,
       totalIssuesAuthored: 0,
       totalIssuesCommented: 0,
+      totalContributions: 0,
       rank,
     });
   });
@@ -491,6 +514,7 @@ describe("Test fetchStats", () => {
       totalPRsReviewed: 0,
       totalIssuesAuthored: 0,
       totalIssuesCommented: 0,
+      totalContributions: 0,
       rank,
     });
   });
@@ -534,8 +558,32 @@ describe("Test fetchStats", () => {
       totalPRsAuthored: 0,
       totalPRsCommented: 0,
       totalPRsReviewed: 0,
+      totalContributions: 0,
       rank,
     });
+  });
+
+  it("should fetch total contributions when include_contributions is true", async () => {
+    const stats = await fetchStats(
+      "anuraghazra",
+      false,
+      [],
+      false,
+      false,
+      false,
+      undefined,
+      [],
+      [],
+      false,
+      false,
+      false,
+      false,
+      false,
+      [],
+      true, // include_contributions
+    );
+
+    expect(stats.totalContributions).toBe(350);
   });
 
   it("should return correct data when user don't have any pull requests", async () => {
@@ -571,6 +619,7 @@ describe("Test fetchStats", () => {
       totalPRsAuthored: 0,
       totalPRsCommented: 0,
       totalPRsReviewed: 0,
+      totalContributions: 0,
       rank,
     });
   });
