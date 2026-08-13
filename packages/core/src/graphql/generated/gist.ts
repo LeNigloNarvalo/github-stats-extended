@@ -1,3 +1,5 @@
+// Generated file — see .github/CONTRIBUTING.md
+
 /** Internal type. DO NOT USE DIRECTLY. */
 type Exact<T extends { [key: string]: unknown }> = { [K in keyof T]: T[K] };
 import { graphqlDocument } from "../graphqlDocument.js";

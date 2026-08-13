@@ -195,6 +195,8 @@ for (const { document } of documents) {
 const INCREMENTAL_TYPE =
   /^\/\*\* Internal type\. DO NOT USE DIRECTLY\. \*\/\nexport type Incremental<T> = [^\n]*\n/m;
 
+const BANNER = `// Generated file — see .github/CONTRIBUTING.md\n\n`;
+
 /** @type {Array<Omit<CodegenOptions, "config">>} */
 const outputs = documents.map((file) => ({
   filename: file.output,
@@ -227,7 +229,7 @@ const generated = await Promise.all(
     const content = await codegen({ filename, config, ...options });
     return {
       filename,
-      content: await format(content.replace(INCREMENTAL_TYPE, ""), {
+      content: await format(BANNER + content.replace(INCREMENTAL_TYPE, ""), {
         ...prettierConfig,
         parser: "typescript",
       }),
