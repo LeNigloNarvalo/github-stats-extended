@@ -6,114 +6,28 @@ import { calculateRank } from "../calculateRank.js";
 import { getConfig } from "../common/config.js";
 import { CustomError, MissingParamError } from "../common/error.js";
 import { wrapTextMultiline } from "../common/fmt.js";
-import { request } from "../common/http.js";
+import { httpGraphQLRequest, request } from "../common/http.js";
+import type { GraphQLResponse } from "../common/http.js";
 import { logger } from "../common/log.js";
 import { buildSearchFilter, parseOwnerAffiliations } from "../common/ops.js";
 import { retryer } from "../common/retryer.js";
+import {
+  UserInfoDocument,
+  UserReposDocument,
+} from "../graphql/generated/stats.js";
+import type {
+  UserInfoQuery,
+  UserInfoQueryVariables,
+} from "../graphql/generated/stats.js";
+import type { GraphQLDocument } from "../graphql/graphqlDocument.js";
 
 import type { RepoUserStats, StatsData } from "./types.js";
 
-// GraphQL queries.
-const GRAPHQL_REPOS_FIELD = `
-  repositories(first: 100, after: $after, ownerAffiliations: $ownerAffiliations, orderBy: {direction: DESC, field: STARGAZERS}) {
-    totalCount
-    nodes {
-      name
-      stargazerCount
-    }
-    pageInfo {
-      hasNextPage
-      endCursor
-    }
-  }
-`;
-
-const GRAPHQL_REPOS_QUERY = `
-  query userInfo($login: String!, $after: String, $ownerAffiliations: [RepositoryAffiliation]) {
-    user(login: $login) {
-      ${GRAPHQL_REPOS_FIELD}
-    }
-  }
-`;
-
-const GRAPHQL_STATS_QUERY = `
-  query userInfo($login: String!, $after: String, $includeMergedPullRequests: Boolean!, $includeDiscussions: Boolean!, $includeDiscussionsAnswers: Boolean!, $startTime: DateTime = null, $ownerAffiliations: [RepositoryAffiliation]) {
-    user(login: $login) {
-      name
-      login
-      commits: contributionsCollection (from: $startTime) {
-        totalCommitContributions,
-      }
-      reviews: contributionsCollection {
-        totalPullRequestReviewContributions
-      }
-      repositoriesContributedTo(first: 1, contributionTypes: [COMMIT, ISSUE, PULL_REQUEST, REPOSITORY]) {
-        totalCount
-      }
-      pullRequests(first: 1) {
-        totalCount
-      }
-      mergedPullRequests: pullRequests(states: MERGED) @include(if: $includeMergedPullRequests) {
-        totalCount
-      }
-      openIssues: issues(states: OPEN) {
-        totalCount
-      }
-      closedIssues: issues(states: CLOSED) {
-        totalCount
-      }
-      followers {
-        totalCount
-      }
-      repositoryDiscussions @include(if: $includeDiscussions) {
-        totalCount
-      }
-      repositoryDiscussionComments(onlyAnswers: true) @include(if: $includeDiscussionsAnswers) {
-        totalCount
-      }
-      contributionsCollection {
-        contributionYears
-      }
-      ${GRAPHQL_REPOS_FIELD}
-    }
-  }
-`;
-
-/** The `user` object returned by the stats GraphQL query. */
-interface StatsUser {
-  name: string | null;
-  login: string;
-  commits: { totalCommitContributions: number };
-  reviews: { totalPullRequestReviewContributions: number };
-  repositoriesContributedTo: { totalCount: number };
-  pullRequests: { totalCount: number };
-  // conditionally included via @include(if: …), so absent when their flag is off
-  mergedPullRequests?: { totalCount: number };
-  openIssues: { totalCount: number };
-  closedIssues: { totalCount: number };
-  followers: { totalCount: number };
-  repositoryDiscussions?: { totalCount: number };
-  repositoryDiscussionComments?: { totalCount: number };
-  contributionsCollection: { contributionYears: Array<number> };
-  repositories: {
-    totalCount: number;
-    nodes: Array<{ name: string; stargazerCount: number }>;
-    pageInfo: { hasNextPage: boolean; endCursor: string | null };
-  };
-}
-
-/** Shape of `response.data` returned by the stats GraphQL query. */
-interface StatsQueryResponse {
-  data: { user: StatsUser };
-}
-
 /** The subset of the stats response `statsFetcher` returns and threads on. */
-interface StatsFetcherResponse {
-  data: StatsQueryResponse & {
-    errors?: Array<{ type?: string; message?: string }>;
-  };
-  statusText: string;
-}
+type StatsFetcherResponse = Pick<
+  GraphQLResponse<UserInfoQuery>,
+  "data" | "statusText"
+>;
 
 /**
  * Stats fetcher object.
@@ -123,11 +37,16 @@ interface StatsFetcherResponse {
  * @returns Axios response.
  */
 const fetcher = (
-  variables: Record<string, unknown>,
+  variables: UserInfoQueryVariables,
   token: string,
-): Promise<AxiosResponse> => {
-  const query = variables["after"] ? GRAPHQL_REPOS_QUERY : GRAPHQL_STATS_QUERY;
-  return request({ query, variables }, { Authorization: `bearer ${token}` });
+): Promise<GraphQLResponse<UserInfoQuery>> => {
+  // pages after the first refetch only `repositories`, a subset of the stats query
+  const document = (
+    variables.after ? UserReposDocument : UserInfoDocument
+  ) as GraphQLDocument<UserInfoQuery, UserInfoQueryVariables>;
+  return httpGraphQLRequest(document, variables, {
+    Authorization: `bearer ${token}`,
+  });
 };
 
 /**
@@ -160,7 +79,7 @@ const statsFetcher = async ({
   includeDiscussions: boolean;
   includeDiscussionsAnswers: boolean;
   startTime: string | undefined;
-  ownerAffiliations: Array<string>;
+  ownerAffiliations: UserInfoQueryVariables["ownerAffiliations"];
   pat: string | null;
 }): Promise<StatsFetcherResponse> => {
   let stats: StatsFetcherResponse | undefined;
@@ -168,9 +87,8 @@ const statsFetcher = async ({
   let endCursor: string | null = null;
   let fetchedPages = 0;
   while (hasNextPage) {
-    const variables: Record<string, unknown> = {
+    const variables: UserInfoQueryVariables = {
       login: username,
-      first: 100,
       after: endCursor,
       includeMergedPullRequests,
       includeDiscussions,
@@ -178,13 +96,14 @@ const statsFetcher = async ({
       startTime,
       ownerAffiliations,
     };
-    const res = await retryer<StatsQueryResponse>(fetcher, variables, pat);
+    const res = await retryer(fetcher, variables, pat);
     if (res.data.errors) {
       return res;
     }
 
     // Store stats data.
-    const repoNodes = res.data.data.user.repositories.nodes;
+    const repositories = res.data.data.user?.repositories;
+    const repoNodes = repositories?.nodes ?? [];
     if (stats) {
       if (fetchedPages === 1) {
         // deep copy to avoid mutating the response cached by the frontend
@@ -193,23 +112,23 @@ const statsFetcher = async ({
           statusText: stats.statusText,
         });
       }
-      stats.data.data.user.repositories.nodes.push(...repoNodes);
+      stats.data.data.user?.repositories.nodes?.push(...repoNodes);
     } else {
       stats = res;
     }
 
     fetchedPages++;
     const repoNodesWithStars = repoNodes.filter(
-      (node) => node.stargazerCount !== 0,
+      (node) => node?.stargazerCount !== 0,
     );
 
     hasNextPage =
       (getConfig().fetchMultiPageStars === "true" ||
         Number(getConfig().fetchMultiPageStars) > fetchedPages) &&
       repoNodes.length === repoNodesWithStars.length &&
-      res.data.data.user.repositories.pageInfo.hasNextPage;
+      !!repositories?.pageInfo.hasNextPage;
 
-    endCursor = res.data.data.user.repositories.pageInfo.endCursor;
+    endCursor = repositories?.pageInfo.endCursor ?? null;
   }
 
   if (!stats) {
@@ -516,6 +435,9 @@ const fetchStats = async (
   }
 
   const user = res.data.data.user;
+  if (!user) {
+    throw new CustomError("Could not fetch user.", CustomError.USER_NOT_FOUND);
+  }
 
   stats.name = user.name || user.login;
 
@@ -578,9 +500,9 @@ const fetchStats = async (
   ];
   const repoToHide = new Set(allExcludedRepos);
 
-  stats.totalStars = user.repositories.nodes
-    .filter((data) => !repoToHide.has(data.name))
-    .reduce((prev, curr) => prev + curr.stargazerCount, 0);
+  stats.totalStars = (user.repositories.nodes ?? [])
+    .filter((data) => !!data && !repoToHide.has(data.name))
+    .reduce((prev, curr) => prev + (curr?.stargazerCount ?? 0), 0);
 
   stats.rank = calculateRank({
     all_commits: include_all_commits,
