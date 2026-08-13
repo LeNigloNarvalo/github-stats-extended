@@ -1,3 +1,9 @@
+/**
+ * Generates TypeScript types for `src/graphql/queries` from GitHub's published schema:
+ * one file per query, plus a `common.ts` for the types their variables name.
+ *
+ * Pass `--check` to fail on drift instead of writing.
+ */
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -6,73 +12,92 @@ import * as typescriptPlugin from "@graphql-codegen/typescript";
 import * as typescriptOperationsPlugin from "@graphql-codegen/typescript-operations";
 import { schema as githubSchema } from "@octokit/graphql-schema";
 import {
+  GraphQLSchema,
+  Kind,
   buildSchema,
+  getNamedType,
+  isSpecifiedScalarType,
   parse,
   print,
   printSchema,
-  printType,
+  typeFromAST,
   visit,
 } from "graphql";
 import { format, resolveConfig } from "prettier";
 
+/**
+ * @typedef {Parameters<typeof codegen>[0]} CodegenOptions
+ * @typedef {CodegenOptions["pluginMap"][string]} CodegenPlugin
+ * @typedef {import("@graphql-codegen/typescript").TypeScriptPluginConfig} TypeScriptPluginConfig
+ * @typedef {import("@graphql-codegen/typescript-operations").TypeScriptDocumentsPluginConfig} TypeScriptDocumentsPluginConfig
+ * @typedef {import("graphql").ASTNode} ASTNode
+ * @typedef {import("graphql").FragmentDefinitionNode} FragmentDefinitionNode
+ * @typedef {import("graphql").GraphQLNamedType} GraphQLNamedType
+ * @typedef {import("graphql").OperationDefinitionNode} OperationDefinitionNode
+ * @typedef {Map<string, FragmentDefinitionNode>} FragmentMap Fragment definitions by name.
+ */
+
 const PACKAGE_ROOT = path.join(import.meta.dirname, "..");
 const QUERIES_DIR = path.join(PACKAGE_ROOT, "src/graphql/queries");
 const OUT_DIR = path.join(PACKAGE_ROOT, "src/graphql/generated");
-const COMMON_FILE = "common.ts";
+const COMMON_FILE = path.join(OUT_DIR, "common.ts");
 // `typescript-operations` resolves this against the working directory
 const COMMON_IMPORT_PATH = path.relative(
   process.cwd(),
-  path.join(OUT_DIR, COMMON_FILE.replace(/\.ts$/, ".js")),
+  COMMON_FILE.replace(/\.ts$/, ".js"),
 );
 
-// `--check` regenerates in memory and fails on any difference, for CI
+/**
+ * @param {string} file Absolute path.
+ * @returns {string} The same path relative to the package, for log messages.
+ */
+const pathRelativeFromRoot = (file) => path.relative(PACKAGE_ROOT, file);
+
+// CI mode: regenerate in memory, fail on any difference
 const checkOnly = process.argv.includes("--check");
 
+/** @type {TypeScriptPluginConfig & TypeScriptDocumentsPluginConfig} */
 const config = {
   emitLegacyCommonJSImports: false,
   enumsAsTypes: true,
   skipTypename: true,
   useTypeImports: true,
-  // read the schema's own enums and input types from the common file instead of redeclaring them per query file;
-  // the import is emitted only where they are used
+  // enums and input types come from the common file, imported only where used
   importSchemaTypesFrom: COMMON_IMPORT_PATH,
-  // nullable fields as `x: T | null`; `@include(if:)` ones stay optional
-  avoidOptionals: { field: true },
   scalars: { DateTime: "string" },
 };
 
-// GitHub's published SDL declares a few fields twice, which trips SDL validation
+// GitHub's SDL declares a few fields twice, which trips SDL validation
 const schemaAst = buildSchema(githubSchema.idl, { assumeValidSDL: true });
+// printed once: every query output reuses it
 const schemaDocument = parse(printSchema(schemaAst));
 
-const queryFiles = (await fs.readdir(QUERIES_DIR))
-  .filter((file) => file.endsWith(".graphql"))
-  .sort();
+// a missing folder is a broken checkout, not an empty query set: generating from it would
+// delete every existing output
+const queryDir = await fs.readdir(QUERIES_DIR).catch(() => {
+  console.error(`No queries in ${pathRelativeFromRoot(QUERIES_DIR)}`);
+  process.exit(1);
+});
+const queryFiles = queryDir.filter((file) => file.endsWith(".graphql")).sort();
 
 const documents = await Promise.all(
   queryFiles.map(async (file) => {
     const location = path.join(QUERIES_DIR, file);
-    const rawSDL = await fs.readFile(location, "utf8");
-    return { location, rawSDL, document: parse(rawSDL) };
+    const output = path.join(OUT_DIR, `${path.basename(file, ".graphql")}.ts`);
+    const document = parse(await fs.readFile(location, "utf8"));
+    return { location, output, document };
   }),
-);
-
-const fragments = new Map(
-  documents.flatMap(({ document }) =>
-    document.definitions
-      .filter((definition) => definition.kind === "FragmentDefinition")
-      .map((definition) => [definition.name.value, definition]),
-  ),
 );
 
 /**
  * Every fragment a node spreads, directly or through another fragment.
  *
- * @param node Operation or fragment definition to walk.
- * @param found Fragment names collected so far.
- * @returns The fragment names the node needs.
+ * @param {ASTNode} node Operation or fragment definition to walk.
+ * @param {FragmentMap} fragments Fragments defined in the same file.
+ * @param {FragmentMap} found Fragments collected so far.
+ * @returns {FragmentMap} The fragment definitions the node needs.
  */
-const spreadFragments = (node, found = new Set()) => {
+const spreadFragments = (node, fragments, found = new Map()) => {
   visit(node, {
     FragmentSpread(spread) {
       const name = spread.name.value;
@@ -83,171 +108,173 @@ const spreadFragments = (node, found = new Set()) => {
       if (!fragment) {
         throw new Error(`No definition found for fragment "${name}"`);
       }
-      found.add(name);
-      spreadFragments(fragment, found);
+      found.set(name, fragment);
+      spreadFragments(fragment, fragments, found);
     },
   });
   return found;
 };
 
 /**
+ * @param {string} value Word to capitalize.
+ * @returns {string} The capitalized word.
+ */
+const pascalCase = (value) => value.charAt(0).toUpperCase() + value.slice(1);
+
+/**
  * The names `typescript-operations` gives an operation's types.
  *
- * @param operation Operation definition.
- * @returns Names to reference in the emitted document.
+ * @param {OperationDefinitionNode} operation Operation definition.
+ * @returns {{ documentName: string; resultType: string; variablesType: string }} Names to reference in the emitted document.
  */
 const operationNames = (operation) => {
   if (!operation.name) {
     throw new Error("Every query needs a name to generate types from");
   }
-  const name = operation.name.value;
-  const pascalCase = name.charAt(0).toUpperCase() + name.slice(1);
-  const suffix =
-    operation.operation.charAt(0).toUpperCase() + operation.operation.slice(1);
-  const resultType = pascalCase.endsWith(suffix)
-    ? pascalCase
-    : `${pascalCase}${suffix}`;
+  const name = pascalCase(operation.name.value);
+  // `typescript-operations` appends the operation type unconditionally
+  const resultType = `${name}${pascalCase(operation.operation)}`;
   return {
-    documentName: `${pascalCase}Document`,
+    documentName: `${name}Document`,
     resultType,
     variablesType: `${resultType}Variables`,
   };
 };
 
-/** Emits one typed document per operation, next to the types for its shape. */
-const documentsPlugin = {
-  plugin: (_schema, files) => {
-    const operations = files.flatMap((file) =>
-      file.document.definitions.filter(
-        (definition) => definition.kind === "OperationDefinition",
-      ),
-    );
-    return {
-      prepend: [`import { graphqlDocument } from "../graphqlDocument.js";`],
-      content: operations
-        .map((operation) => {
-          const { documentName, resultType, variablesType } =
-            operationNames(operation);
-          const text = [
-            print(operation),
-            ...[...spreadFragments(operation)].map((name) =>
-              print(fragments.get(name)),
-            ),
-          ].join("\n");
-          return `export const ${documentName} = graphqlDocument<${resultType}, ${variablesType}>(\`\n${text}\`);`;
-        })
-        .join("\n\n"),
-    };
-  },
+/**
+ * Emits one typed document per operation, beside its types.
+ *
+ * @type {CodegenPlugin['plugin']}
+ */
+const documentsPlugin = (_schema, files) => {
+  // `document` is optional on codegen's file type; ours are always parsed
+  const definitions = files.flatMap((file) => file.document?.definitions ?? []);
+  const { FRAGMENT_DEFINITION, OPERATION_DEFINITION } = Kind;
+
+  const fragments = new Map(
+    definitions
+      .filter((definition) => definition.kind === FRAGMENT_DEFINITION)
+      .map((definition) => [definition.name.value, definition]),
+  );
+
+  const operations = definitions
+    .filter((definition) => definition.kind === OPERATION_DEFINITION)
+    .map((operation) => {
+      const { documentName, resultType, variablesType } =
+        operationNames(operation);
+      const text = [
+        print(operation),
+        ...[...spreadFragments(operation, fragments).values()].map(print),
+      ].join("\n");
+      return `export const ${documentName} = graphqlDocument<${resultType}, ${variablesType}>(\`\n${text}\`);`;
+    });
+
+  return {
+    prepend: [`import { graphqlDocument } from "../graphqlDocument.js";`],
+    content: operations.join("\n\n"),
+  };
 };
 
-// a schema of only the types the queries reference through their variables, so the
-// common file gets the scalars and enums in use rather than every one GitHub declares
-const variableTypeNames = new Set();
+// only the types the queries name in their variables; an unknown name yields undefined,
+// which codegen reports later against the query
+/** @type {Set<GraphQLNamedType>} */
+const commonTypes = new Set();
 for (const { document } of documents) {
   visit(document, {
-    VariableDefinition(node) {
-      visit(node.type, {
-        NamedType(namedType) {
-          variableTypeNames.add(namedType.name.value);
-        },
-      });
+    VariableDefinition({ type }) {
+      // `getNamedType` strips the `[…]!` wrappers the variable declares
+      const named = getNamedType(typeFromAST(schemaAst, type));
+      if (named && !isSpecifiedScalarType(named)) {
+        commonTypes.add(named);
+      }
     },
   });
 }
-const subsetSchemaAst = buildSchema(
-  [...variableTypeNames]
-    .map((name) => schemaAst.getType(name))
-    .filter((type) => !!type && !type.name.startsWith("__"))
-    .map((type) => printType(type))
-    .join("\n\n"),
-  { assumeValidSDL: true },
-);
 
-// `typescript-operations` emits this for the fragment masking we don't generate, and
-// has no config to leave it out
+// emitted for the fragment masking we don't generate, with no config to leave it out
 const INCREMENTAL_TYPE =
   /^\/\*\* Internal type\. DO NOT USE DIRECTLY\. \*\/\nexport type Incremental<T> = [^\n]*\n/m;
 
-const generated = [
-  [
-    path.join(OUT_DIR, COMMON_FILE),
-    await codegen({
-      filename: path.join(OUT_DIR, COMMON_FILE),
-      schema: parse(printSchema(subsetSchemaAst)),
-      schemaAst: subsetSchemaAst,
-      documents: [],
-      config,
-      plugins: [{ typescript: {} }],
-      pluginMap: { typescript: typescriptPlugin },
-    }),
-  ],
-];
+/** @type {Array<Omit<CodegenOptions, "config">>} */
+const outputs = documents.map((file) => ({
+  filename: file.output,
+  schema: schemaDocument,
+  schemaAst,
+  documents: [file],
+  plugins: [{ "typescript-operations": {} }, { documents: {} }],
+  pluginMap: {
+    "typescript-operations": typescriptOperationsPlugin,
+    documents: { plugin: documentsPlugin },
+  },
+}));
 
-for (const file of documents) {
-  const filename = path.join(
-    OUT_DIR,
-    `${path.basename(file.location, ".graphql")}.ts`,
-  );
-  const content = await codegen({
-    filename,
-    schema: schemaDocument,
-    schemaAst,
-    documents: [file],
-    config,
-    plugins: [{ "typescript-operations": {} }, { documents: {} }],
-    pluginMap: {
-      "typescript-operations": typescriptOperationsPlugin,
-      documents: documentsPlugin,
-    },
+// queries with only built-in scalar variables need no common file
+if (commonTypes.size) {
+  const commonSchema = new GraphQLSchema({ types: [...commonTypes] });
+  outputs.push({
+    filename: COMMON_FILE,
+    schema: parse(printSchema(commonSchema)),
+    schemaAst: commonSchema,
+    documents: [],
+    plugins: [{ typescript: {} }],
+    pluginMap: { typescript: typescriptPlugin },
   });
-  generated.push([filename, content.replace(INCREMENTAL_TYPE, "")]);
 }
 
-const prettierConfig = await resolveConfig(path.join(OUT_DIR, COMMON_FILE));
-const drifted = [];
-
-await fs.mkdir(OUT_DIR, { recursive: true });
-for (const [filename, content] of generated) {
-  const formatted = await format(content, {
-    ...prettierConfig,
-    parser: "typescript",
-  });
-  if (checkOnly) {
-    const current = await fs.readFile(filename, "utf8").catch(() => null);
-    if (current !== formatted) {
-      drifted.push(path.relative(PACKAGE_ROOT, filename));
-    }
-  } else {
-    await fs.writeFile(filename, formatted);
-  }
-}
-
-// a query removed from the queries folder leaves its generated file behind
-const expected = new Set(
-  generated.map(([filename]) => path.basename(filename)),
+const prettierConfig = await resolveConfig(COMMON_FILE);
+const generated = await Promise.all(
+  outputs.map(async ({ filename, ...options }) => {
+    const content = await codegen({ filename, config, ...options });
+    return {
+      filename,
+      content: await format(content.replace(INCREMENTAL_TYPE, ""), {
+        ...prettierConfig,
+        parser: "typescript",
+      }),
+    };
+  }),
 );
-const stale = (await fs.readdir(OUT_DIR).catch(() => [])).filter(
-  (file) => !expected.has(file),
-);
-for (const file of stale) {
-  if (checkOnly) {
-    drifted.push(path.relative(PACKAGE_ROOT, path.join(OUT_DIR, file)));
-  } else {
-    await fs.rm(path.join(OUT_DIR, file));
-  }
-}
+
+const queryCount = `${documents.length} ${documents.length === 1 ? "query" : "queries"}`;
+
+// a deleted query leaves its generated file behind; anything else in the folder is not ours
+const expected = new Set(generated.map(({ filename }) => filename));
+const stale = (await fs.readdir(OUT_DIR).catch(() => []))
+  .filter((file) => file.endsWith(".ts"))
+  .map((file) => path.join(OUT_DIR, file))
+  .filter((file) => !expected.has(file));
 
 if (checkOnly) {
-  if (drifted.length > 0) {
-    console.error(
-      `GraphQL types are out of date:\n${drifted.map((file) => `  ${file}`).join("\n")}\n\nRun \`pnpm generate-graphql-types\` in packages/core.`,
-    );
+  const outdated = stale.map(pathRelativeFromRoot);
+  for (const { filename, content } of generated) {
+    const current = await fs.readFile(filename, "utf8").catch(() => null);
+    if (current !== content) {
+      outdated.push(pathRelativeFromRoot(filename));
+    }
+  }
+
+  if (outdated.length > 0) {
+    const files = outdated.map((file) => `  ${file}`).join("\n");
+    const message = `GraphQL types are out of date:\n${files}\n\nRun \`pnpm --filter ./packages/core/ run generate-graphql-types\`.`;
+    console.error(message);
     process.exit(1);
   }
-  console.log(`GraphQL types are up to date (${queryFiles.length} queries)`);
+
+  const message = `GraphQL types are up to date (${queryCount})`;
+  console.log(message);
 } else {
-  console.log(
-    `Generated ${generated.length} files in ${path.relative(PACKAGE_ROOT, OUT_DIR)} from ${queryFiles.length} queries`,
-  );
+  await fs.mkdir(OUT_DIR, { recursive: true });
+  for (const { filename, content } of generated) {
+    await fs.writeFile(filename, content);
+  }
+
+  for (const file of stale) {
+    await fs.rm(file);
+    const removed = `Removed ${pathRelativeFromRoot(file)} — no query generates it`;
+    console.log(removed);
+  }
+
+  const outDir = pathRelativeFromRoot(OUT_DIR);
+  const message = `Generated ${generated.length} files in ${outDir} from ${queryCount}`;
+  console.log(message);
 }
