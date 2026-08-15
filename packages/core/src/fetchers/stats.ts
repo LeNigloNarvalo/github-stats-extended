@@ -283,6 +283,9 @@ interface ContributionsQuery {
 /**
  * Fetch all-time contributions by building a single GraphQL query
  * for all the given years.
+ *
+ * Whether private contributions are included depends on the user's profile settings:
+ * https://docs.github.com/en/account-and-profile/how-tos/contribution-settings/manage-visibility-settings-for-private-contributions-and-achievements#changing-the-visibility-of-your-private-contributions
  */
 const fetchTotalContributions = async (
   username: string,
@@ -296,6 +299,7 @@ const fetchTotalContributions = async (
   const yearFields = years
     .map(
       (year) =>
+        // without the "to" field, 2024-01-01 would be included for year=2023
         `year_${year}: contributionsCollection(from: "${year}-01-01T00:00:00Z", to: "${year}-12-31T23:59:59Z") { contributionCalendar { totalContributions } }`,
     )
     .join("\n");
