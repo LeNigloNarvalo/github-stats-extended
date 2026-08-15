@@ -417,7 +417,7 @@ const renderStatsCard = (
 
   if (show.includes("contributions")) {
     STATS["contributions"] = {
-      icon: icons.repo_push,
+      icon: icons.contributions,
       label: i18n.t("statcard.contributions"),
       value: totalContributions,
       id: "contributions",
