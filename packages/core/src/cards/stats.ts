@@ -294,6 +294,16 @@ const renderStatsCard = (
     value: totalStars,
     id: "stars",
   };
+
+  if (show.includes("contributions")) {
+    STATS["contributions"] = {
+      icon: icons.contributions,
+      label: i18n.t("statcard.contributions"),
+      value: totalContributions,
+      id: "contributions",
+    };
+  }
+
   STATS["commits"] = {
     icon: icons.commits,
     label: `${i18n.t("statcard.commits")}${getTotalCommitsYearLabel(
@@ -412,15 +422,6 @@ const renderStatsCard = (
       value: totalIssuesCommented,
       id: "issues_commented",
       link: `https://github.com/search?q=${repoFilter}commenter%3A${encodedUsername}+-author%3A${encodedUsername}&amp;type=issues`,
-    };
-  }
-
-  if (show.includes("contributions")) {
-    STATS["contributions"] = {
-      icon: icons.contributions,
-      label: i18n.t("statcard.contributions"),
-      value: totalContributions,
-      id: "contributions",
     };
   }
 

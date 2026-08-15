@@ -525,7 +525,7 @@ const statCardLocales = ({
       en: "Issues Commented",
     },
     "statcard.contributions": {
-      en: "Contributions",
+      en: "Total Contributions",
     },
     "statcard.prs-merged": {
       en: "Total PRs Merged",
