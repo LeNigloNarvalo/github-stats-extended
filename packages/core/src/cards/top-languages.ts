@@ -20,6 +20,8 @@ const DEFAULT_LANG_COLOR = "#858585";
 const CARD_PADDING = 25;
 const COMPACT_LAYOUT_BASE_HEIGHT = 90;
 const MAXIMUM_LANGS_COUNT = 20;
+const MAXIMUM_COLUMNS = 4;
+const TOTAL_BAR_HEIGHT = 30;
 
 const NORMAL_LAYOUT_DEFAULT_LANGS_COUNT = 5;
 const COMPACT_LAYOUT_DEFAULT_LANGS_COUNT = 6;
@@ -41,6 +43,8 @@ interface TopLangOptions extends CommonOptions {
   hide_values: boolean;
   prog_bar_bg_color: string;
   stats_format: "percentages" | "bytes";
+  columns: number;
+  total_bar: boolean;
 }
 
 /**
@@ -448,6 +452,140 @@ const createDonutLanguagesNode = ({
 };
 
 /**
+ * Splits languages into columns and renders each column as a full progress
+ * bar list (name + bar + value), laid out side by side.
+ *
+ * @param props Function properties.
+ * @param props.langs Array of programming languages.
+ * @param props.width Card width.
+ * @param props.totalSize Total size of all languages.
+ * @param props.statsFormat Stats format.
+ * @param props.hideValues Whether to hide stats values.
+ * @param props.columns Number of columns to split the languages into.
+ * @returns Multi-column normal layout SVG node.
+ */
+const createColumnedProgressNode = ({
+  langs,
+  width,
+  totalSize,
+  statsFormat,
+  hideValues,
+  columns,
+}: {
+  langs: Array<Lang>;
+  width: number;
+  totalSize: number;
+  statsFormat: string;
+  hideValues?: boolean | undefined;
+  columns: number;
+}): string => {
+  const columnGap = 25;
+  const columnWidth = (width - columnGap * (columns - 1)) / columns;
+  const perColumn = Math.ceil(langs.length / columns);
+  const chunked = chunkArray(langs, perColumn);
+
+  const layouts = chunked.map((group) => {
+    const items = group.map((lang, index) =>
+      createProgressTextNode({
+        width: columnWidth,
+        name: lang.name,
+        color: lang.color || DEFAULT_LANG_COLOR,
+        size: lang.size,
+        totalSize,
+        statsFormat,
+        hideValues,
+        index,
+      }),
+    );
+    return flexLayout({
+      items,
+      gap: 40,
+      direction: "column",
+    }).join("");
+  });
+
+  return flexLayout({
+    items: layouts,
+    gap: columnGap,
+  }).join("");
+};
+
+/**
+ * Renders a single segmented bar summarizing every language's share of the
+ * total, all languages stacked side by side proportional to their size.
+ *
+ * @param langs Array of programming languages.
+ * @param totalSize Total size of all languages.
+ * @param width Card width.
+ * @returns Total bar SVG node.
+ */
+const createTotalBar = (
+  langs: Array<Lang>,
+  totalSize: number,
+  width: number,
+): string => {
+  const paddingRight = 50;
+  const offsetWidth = width - paddingRight;
+  let progressOffset = 0;
+
+  return langs
+    .map((lang) => {
+      const langColor = resolveLangColor(lang);
+      const percentage = parseFloat(
+        ((lang.size / totalSize) * offsetWidth).toFixed(2),
+      );
+      const progress = percentage < 10 ? percentage + 10 : percentage;
+
+      const output = `
+        <rect
+          mask="url(#total-bar-mask)"
+          data-testid="lang-progress"
+          x="${progressOffset}"
+          y="0"
+          width="${progress}"
+          height="8"
+          fill="${langColor}"
+        />
+      `;
+      progressOffset += percentage;
+      return output;
+    })
+    .join("");
+};
+
+/**
+ * Renders the total bar section, including its clipping mask.
+ *
+ * @param props Function properties.
+ * @param props.langs Array of programming languages.
+ * @param props.totalSize Total size of all languages.
+ * @param props.width Card width.
+ * @param props.y Vertical offset to place the bar at.
+ * @returns Total bar section SVG node, translated into place.
+ */
+const renderTotalBarSection = ({
+  langs,
+  totalSize,
+  width,
+  y,
+}: {
+  langs: Array<Lang>;
+  totalSize: number;
+  width: number;
+  y: number;
+}): string => {
+  const offsetWidth = width - 50;
+  return `
+    <g transform="translate(0, ${y})">
+      <mask id="total-bar-mask">
+        <rect x="0" y="0" width="${offsetWidth}" height="8" fill="white" rx="5"/>
+      </mask>
+      ${createTotalBar(langs, totalSize, width)}
+    </g>
+  `;
+};
+
+/**
  * Renders the default language card layout.
  *
  * @param langs Array of programming languages.
@@ -455,6 +593,7 @@ const createDonutLanguagesNode = ({
  * @param totalLanguageSize Total size of all languages.
  * @param statsFormat Stats format.
  * @param hideValues Whether to hide stats values.
+ * @param columns Number of columns to split the languages into.
  * @returns Normal layout card SVG object.
  */
 const renderNormalLayout = (
@@ -463,7 +602,19 @@ const renderNormalLayout = (
   totalLanguageSize: number,
   statsFormat: string,
   hideValues?: boolean,
+  columns = 1,
 ): string => {
+  if (columns > 1) {
+    return createColumnedProgressNode({
+      langs,
+      width,
+      totalSize: totalLanguageSize,
+      statsFormat,
+      hideValues,
+      columns,
+    });
+  }
+
   return flexLayout({
     items: langs.map((lang, index) => {
       return createProgressTextNode({
@@ -533,16 +684,16 @@ const renderCompactLayout = (
     .join("");
 
   return `
-  ${
-    hideProgress
-      ? ""
-      : `
-      <mask id="rect-mask">
-          <rect x="0" y="0" width="${offsetWidth}" height="8" fill="white" rx="5"/>
-        </mask>
-        ${compactProgressBar}
-      `
-  }
+    ${
+      hideProgress
+        ? ""
+        : `
+    <mask id="rect-mask">
+      <rect x="0" y="0" width="${offsetWidth}" height="8" fill="white" rx="5"/>
+    </mask>
+    ${compactProgressBar}
+    `
+    }
     <g transform="translate(0, ${hideProgress ? "0" : "25"})">
       ${createLanguageTextNode({
         langs,
@@ -821,16 +972,16 @@ const renderDonutLayout = (
             const delay = staggerDelay + 300;
 
             const output = `
-       <g class="stagger" style="animation-delay: ${delay}ms">
-        <path
-          data-testid="lang-donut"
-          size="${section.percent}"
-          d="${section.d}"
-          stroke="${colors[index] ?? DEFAULT_LANG_COLOR}"
-          fill="none"
-          stroke-width="${strokeWidth}">
-        </path>
-      </g>
+        <g class="stagger" style="animation-delay: ${delay}ms">
+          <path
+            data-testid="lang-donut"
+            size="${section.percent}"
+            d="${section.d}"
+            stroke="${colors[index] ?? DEFAULT_LANG_COLOR}"
+            fill="none"
+            stroke-width="${strokeWidth}">
+          </path>
+        </g>
       `;
 
             return output;
@@ -927,6 +1078,8 @@ const renderTopLanguages = (
     border_radius,
     disable_animations,
     stats_format = "percentages",
+    columns,
+    total_bar,
   } = options;
 
   const i18n = new I18n({
@@ -950,6 +1103,9 @@ const renderTopLanguages = (
   let height = calculateNormalLayoutHeight(langs.length);
 
   const { lightColors, darkColors } = getLightDarkColors(options);
+
+  const effectiveColumns = clampValue(columns || 1, 1, MAXIMUM_COLUMNS);
+  const showTotalBar = Boolean(total_bar);
 
   let finalLayout: string;
   if (langs.length === 0) {
@@ -997,13 +1153,27 @@ const renderTopLanguages = (
       hide_values,
     );
   } else {
+    const rows = Math.ceil(langs.length / effectiveColumns);
+    height =
+      calculateNormalLayoutHeight(rows) + (showTotalBar ? TOTAL_BAR_HEIGHT : 0);
+
     finalLayout = renderNormalLayout(
       langs,
       width,
       totalLanguageSize,
       stats_format,
       hide_values,
+      effectiveColumns,
     );
+
+    if (showTotalBar) {
+      finalLayout += renderTotalBarSection({
+        langs,
+        totalSize: totalLanguageSize,
+        width,
+        y: rows * 40 + 15,
+      });
+    }
   }
 
   const card = new Card({
@@ -1023,45 +1193,45 @@ const renderTopLanguages = (
   card.setHideTitle(hide_title);
   card.setCSS({
     light: `
-    @keyframes slideInAnimation {
-      from {
-        width: 0;
+      @keyframes slideInAnimation {
+        from {
+          width: 0;
+        }
+        to {
+          width: calc(100%-100px);
+        }
       }
-      to {
-        width: calc(100%-100px);
+      @keyframes growWidthAnimation {
+        from {
+          width: 0;
+        }
+        to {
+          width: 100%;
+        }
       }
-    }
-    @keyframes growWidthAnimation {
-      from {
-        width: 0;
+      .stat {
+        font: 600 14px 'Segoe UI', Ubuntu, "Helvetica Neue", Sans-Serif; fill: ${lightColors.textColor};
       }
-      to {
-        width: 100%;
+      @supports(-moz-appearance: auto) {
+        /* Selector detects Firefox */
+        .stat { font-size:12px; }
       }
-    }
-    .stat {
-      font: 600 14px 'Segoe UI', Ubuntu, "Helvetica Neue", Sans-Serif; fill: ${lightColors.textColor};
-    }
-    @supports(-moz-appearance: auto) {
-      /* Selector detects Firefox */
-      .stat { font-size:12px; }
-    }
-    .bold { font-weight: 700 }
-    .lang-name {
-      font: 400 11px "Segoe UI", Ubuntu, Sans-Serif;
-      fill: ${lightColors.textColor};
-    }
-    .stagger {
-      opacity: 0;
-      animation: fadeInAnimation 0.3s ease-in-out forwards;
-    }
-    #rect-mask rect{
-      animation: slideInAnimation 1s ease-in-out forwards;
-    }
-    .lang-progress{
-      animation: growWidthAnimation 0.6s ease-in-out forwards;
-    }
-    .progress-background { fill: ${lightColors.progBarBgColor}; }
+      .bold { font-weight: 700 }
+      .lang-name {
+        font: 400 11px "Segoe UI", Ubuntu, Sans-Serif;
+        fill: ${lightColors.textColor};
+      }
+      .stagger {
+        opacity: 0;
+        animation: fadeInAnimation 0.3s ease-in-out forwards;
+      }
+      #rect-mask rect{
+        animation: slideInAnimation 1s ease-in-out forwards;
+      }
+      .lang-progress{
+        animation: growWidthAnimation 0.6s ease-in-out forwards;
+      }
+      .progress-background { fill: ${lightColors.progBarBgColor}; }
     `,
     dark: darkColors
       ? `
