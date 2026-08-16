@@ -30,6 +30,8 @@ export default async (
     hide_progress,
     hide_values,
     stats_format,
+    columns,
+    total_bar,
     ...remainingParams
   },
   pat = null,
@@ -126,6 +128,8 @@ export default async (
         hide_progress: parseBoolean(hide_progress),
         hide_values: parseBoolean(hide_values),
         stats_format,
+        columns: columns !== undefined ? parseInt(columns, 10) : undefined,
+        total_bar: parseBoolean(total_bar),
       }),
     };
   } catch (err) {
