@@ -21,6 +21,8 @@ const DEFAULT_LANG_COLOR = "#858585";
 const CARD_PADDING = 25;
 const COMPACT_LAYOUT_BASE_HEIGHT = 90;
 const MAXIMUM_LANGS_COUNT = 20;
+const MAXIMUM_COLUMNS = 4;
+const TOTAL_BAR_HEIGHT = 30;
 
 const NORMAL_LAYOUT_DEFAULT_LANGS_COUNT = 5;
 const COMPACT_LAYOUT_DEFAULT_LANGS_COUNT = 6;
@@ -265,6 +267,127 @@ const createProgressTextNode = ({
 };
 
 /**
+ * Splits languages into columns and renders each column as a full progress
+ * bar list (name + bar + value), laid out side by side.
+ *
+ * @param {object} props Function properties.
+ * @param {Lang[]} props.langs Array of programming languages.
+ * @param {number} props.width Card width.
+ * @param {string} props.progBarBgColor Color of the background of progress bar.
+ * @param {number} props.totalSize Total size of all languages.
+ * @param {string} props.statsFormat Stats format.
+ * @param {boolean=} props.hideValues Whether to hide stats values.
+ * @param {number} props.columns Number of columns to split the languages into.
+ * @returns {string} Multi-column normal layout SVG node.
+ */
+const createColumnedProgressNode = ({
+  langs,
+  width,
+  progBarBgColor,
+  totalSize,
+  statsFormat,
+  hideValues,
+  columns,
+}) => {
+  const columnGap = 25;
+  const columnWidth = (width - columnGap * (columns - 1)) / columns;
+  const perColumn = Math.ceil(langs.length / columns);
+  const chunked = chunkArray(langs, perColumn);
+
+  const layouts = chunked.map((group) => {
+    // @ts-ignore
+    const items = group.map((lang, index) =>
+      createProgressTextNode({
+        width: columnWidth,
+        name: lang.name,
+        color: lang.color || DEFAULT_LANG_COLOR,
+        progBarBgColor,
+        size: lang.size,
+        totalSize,
+        statsFormat,
+        hideValues,
+        index,
+      }),
+    );
+    return flexLayout({
+      items,
+      gap: 40,
+      direction: "column",
+    }).join("");
+  });
+
+  return flexLayout({
+    items: layouts,
+    gap: columnGap,
+  }).join("");
+};
+
+/**
+ * Renders a single segmented bar summarizing every language's share of the
+ * total, all languages stacked side by side proportional to their size.
+ *
+ * @param {Lang[]} langs Array of programming languages.
+ * @param {number} totalSize Total size of all languages.
+ * @param {number} width Card width.
+ * @returns {string} Total bar SVG node.
+ */
+const createTotalBar = (langs, totalSize, width) => {
+  const paddingRight = 50;
+  const offsetWidth = width - paddingRight;
+  let progressOffset = 0;
+
+  return langs
+    .map((lang) => {
+      const langColor = lang.color || DEFAULT_LANG_COLOR;
+      if (!isPrefixedHexColor(langColor)) {
+        throw new Error(`Invalid language color: "${langColor}"`);
+      }
+
+      const percentage = parseFloat(
+        ((lang.size / totalSize) * offsetWidth).toFixed(2),
+      );
+      const progress = percentage < 10 ? percentage + 10 : percentage;
+
+      const output = `
+        <rect
+          mask="url(#total-bar-mask)"
+          data-testid="lang-progress"
+          x="${progressOffset}"
+          y="0"
+          width="${progress}"
+          height="8"
+          fill="${langColor}"
+        />
+      `;
+      progressOffset += percentage;
+      return output;
+    })
+    .join("");
+};
+
+/**
+ * Renders the total bar section, including its clipping mask.
+ *
+ * @param {object} props Function properties.
+ * @param {Lang[]} props.langs Array of programming languages.
+ * @param {number} props.totalSize Total size of all languages.
+ * @param {number} props.width Card width.
+ * @param {number} props.y Vertical offset to place the bar at.
+ * @returns {string} Total bar section SVG node, translated into place.
+ */
+const renderTotalBarSection = ({ langs, totalSize, width, y }) => {
+  const offsetWidth = width - 50;
+  return `
+    <g transform="translate(0, ${y})">
+      <mask id="total-bar-mask">
+        <rect x="0" y="0" width="${offsetWidth}" height="8" fill="white" rx="5"/>
+      </mask>
+      ${createTotalBar(langs, totalSize, width)}
+    </g>
+  `;
+};
+
+/**
  * Creates compact text item for a programming language.
  *
  * @param {object} props Function properties.
@@ -393,6 +516,7 @@ const createDonutLanguagesNode = ({
  * @param progBarBgColor Color of the background of progress bar.
  * @param {string} statsFormat Stats format.
  * @param {boolean=} hideValues Whether to hide stats values.
+ * @param {number} [columns] Number of columns to split the languages into.
  * @returns {string} Normal layout card SVG object.
  */
 const renderNormalLayout = (
@@ -402,7 +526,20 @@ const renderNormalLayout = (
   progBarBgColor,
   statsFormat,
   hideValues,
+  columns = 1,
 ) => {
+  if (columns > 1) {
+    return createColumnedProgressNode({
+      langs,
+      width,
+      progBarBgColor,
+      totalSize: totalLanguageSize,
+      statsFormat,
+      hideValues,
+      columns,
+    });
+  }
+
   return flexLayout({
     items: langs.map((lang, index) => {
       return createProgressTextNode({
@@ -882,6 +1019,8 @@ const renderTopLanguages = (topLangs, options = {}) => {
     border_color,
     disable_animations,
     stats_format = "percentages",
+    columns,
+    total_bar,
   } = options;
 
   const i18n = new I18n({
@@ -912,6 +1051,9 @@ const renderTopLanguages = (topLangs, options = {}) => {
     border_color,
     theme,
   });
+
+  const effectiveColumns = clampValue(columns || 1, 1, MAXIMUM_COLUMNS);
+  const showTotalBar = Boolean(total_bar);
 
   let finalLayout;
   if (langs.length === 0) {
@@ -960,6 +1102,10 @@ const renderTopLanguages = (topLangs, options = {}) => {
       hide_values,
     );
   } else {
+    const rows = Math.ceil(langs.length / effectiveColumns);
+    height =
+      calculateNormalLayoutHeight(rows) + (showTotalBar ? TOTAL_BAR_HEIGHT : 0);
+
     finalLayout = renderNormalLayout(
       langs,
       width,
@@ -967,7 +1113,17 @@ const renderTopLanguages = (topLangs, options = {}) => {
       fallbackColor(prog_bar_bg_color, "#ddd"),
       stats_format,
       hide_values,
+      effectiveColumns,
     );
+
+    if (showTotalBar) {
+      finalLayout += renderTotalBarSection({
+        langs,
+        totalSize: totalLanguageSize,
+        width,
+        y: rows * 40 + 15,
+      });
+    }
   }
 
   const card = new Card({
