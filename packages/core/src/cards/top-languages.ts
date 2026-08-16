@@ -506,6 +506,7 @@ const createColumnedProgressNode = ({
 
   return flexLayout({
     items: layouts,
+    sizes: layouts.map(() => columnWidth),
     gap: columnGap,
   }).join("");
 };
